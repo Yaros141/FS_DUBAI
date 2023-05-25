@@ -1,0 +1,109 @@
+WITH freight_data AS (
+				SELECT	claim.inc 'claim',
+						departure.alias 'departure_airport',
+						CASE
+							WHEN SUBSTRING(res.order_info, CHARINDEX('arrivalairportcode', res.order_info, 0) + 20 , 3) = 'DWC' THEN 'DXB'
+							WHEN res.freight = 1 THEN SUBSTRING(res.order_info, CHARINDEX('arrivalairportcode', res.order_info, 0) + 20 , 3)
+							ELSE town.alias 
+						END 'arrival_airport'
+
+				FROM	claim
+
+						LEFT JOIN [order] res		ON res.claim = claim.inc
+						LEFT JOIN tour				ON tour.inc = claim.tour
+						LEFT JOIN freight			ON freight.inc = res.freight
+						LEFT JOIN town				ON town.inc = freight.target
+						LEFT JOIN town departure	ON departure.inc = freight.source
+
+				WHERE	claim.rdate >= CAST(GETDATE() - 45 AS DATE)
+						AND claim.status != 3
+						AND claim.canceldate IS NULL
+						AND tour.state = 20613
+						AND res.freight > 0
+						AND res.routeindex = 0
+						AND claim.owner = 100961
+						AND departure.alias IS NOT NULL
+						AND tour.lname NOT LIKE '%ticket%'
+								
+				GROUP BY
+						claim.inc,
+						departure.alias,
+						CASE
+							WHEN SUBSTRING(res.order_info, CHARINDEX('arrivalairportcode', res.order_info, 0) + 20 , 3) = 'DWC' THEN 'DXB'
+							WHEN res.freight = 1 THEN SUBSTRING(res.order_info, CHARINDEX('arrivalairportcode', res.order_info, 0) + 20 , 3)
+							ELSE town.alias 
+				END),
+----------------------------------------------------------------------------------------------------------------------------------------------------------	
+
+merged_data AS (
+				SELECT
+						region.lname 'hotel_region',
+						freight_data.departure_airport,
+						freight_data.arrival_airport,
+						SUM(pax.adult + pax.child) 'pax'
+
+				FROM
+						claim
+
+						LEFT JOIN tour				ON tour.inc = claim.tour
+						LEFT JOIN [order] res		ON res.claim = claim.inc
+						LEFT JOIN hotel				ON hotel.inc = res.hotel
+						LEFT JOIN town				ON town.inc = hotel.town
+						LEFT JOIN region			ON region.inc = town.region
+						LEFT JOIN freight_data		ON freight_data.claim = claim.inc
+						LEFT JOIN v_ClaimPax pax	ON claim.inc = pax.inc
+		
+				WHERE
+						claim.rdate >= CAST(GETDATE() - 45 AS DATE)
+						AND claim.status != 3
+						AND claim.canceldate IS NULL
+						AND claim.owner = 100961
+						AND res.hotel > 0
+						AND tour.state = 20613
+						AND res.[index] = 0
+						AND freight_data.arrival_airport IS NOT NULL
+						AND res.partner = 195574
+
+				GROUP BY
+						region.lname,
+						freight_data.departure_airport,
+						freight_data.arrival_airport),
+----------------------------------------------------------------------------------------------------------------------------------------------------------	
+
+share_data AS (
+				SELECT 
+						hotel_region,
+						departure_airport,
+						arrival_airport, 
+						(pax + 0.0)  / SUM(pax) OVER(PARTITION BY [departure_airport], [arrival_airport]) share  
+				FROM 
+						merged_data)
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+SELECT 
+		CAST(fp.date AS DATE) date,
+		freight.lname freight,
+		departure.alias departure,
+		arrival.alias arrival,
+		Bcount - (Bcount + Rcount) sold,
+		share_data.hotel_region,
+		share_data.share,
+		(Bcount - (Bcount + Rcount)) * share_data.share 'forecast_accomodation'
+	
+FROM 
+		frblock fp
+
+		LEFT JOIN freight			ON freight.inc = fp.freight
+		LEFT JOIN town arrival		ON arrival.inc = freight.target
+		LEFT JOIN town departure	ON departure.inc = freight.source
+		LEFT JOIN share_data		ON share_data.departure_airport = departure.alias AND share_data.arrival_airport = arrival.alias
+		
+WHERE
+		arrival.state = 20613
+		AND departure.state = 210357
+		AND fp.date >= CAST(GETDATE() + 30 AS DATE)
+		AND (Bcount - (Bcount + Rcount)) > 0
+
+ORDER BY
+		1
